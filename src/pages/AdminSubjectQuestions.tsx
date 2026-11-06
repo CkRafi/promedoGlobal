@@ -1,0 +1,1478 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
+import { 
+  ArrowLeft, Plus, Trash2, Save, X, ChevronDown, ListChecks, Target,
+  BookOpen, FolderPlus, HelpCircle, CheckCircle2, FileText, Search, Loader2, Info, Edit2, Upload, Image as ImageIcon
+} from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { db, handleFirestoreError, OperationType } from '../lib/firebase';
+import { collection, getDocs, doc, setDoc, addDoc, deleteDoc, query, orderBy } from 'firebase/firestore';
+import { useAuth } from '../context/AuthContext';
+
+interface Subject {
+  id: string; // Document ID (typically the subject name or slugified)
+  name: string;
+  details: string;
+  createdAt: string;
+}
+
+interface Question {
+  id: string;
+  text: string;
+  options: string[];
+  correctAnswer: number;
+  explanation: string;
+  imageUrl?: string;
+  createdAt?: string;
+}
+
+export default function AdminSubjectQuestions() {
+  const navigate = useNavigate();
+  const { isAdmin } = useAuth();
+  const questionInputRef = useRef<HTMLTextAreaElement>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
+
+  // States
+  const [subjects, setSubjects] = useState<Subject[]>([]);
+  const [selectedSubjectId, setSelectedSubjectId] = useState<string>('');
+  const [viewMode, setViewMode] = useState<'list' | 'add-questions'>('list');
+  const [questions, setQuestions] = useState<Question[]>([]);
+  const [subjectCounts, setSubjectCounts] = useState<Record<string, number>>({});
+  
+  const [loadingSubjects, setLoadingSubjects] = useState(true);
+  const [loadingQuestions, setLoadingQuestions] = useState(false);
+  const [submittingQuestion, setSubmittingQuestion] = useState(false);
+  const [submittingSubject, setSubmittingSubject] = useState(false);
+  
+  const [showAddSubject, setShowAddSubject] = useState(false);
+  const [searchText, setSearchText] = useState('');
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
+
+  // Form states for new Subject
+  const [newSubject, setNewSubject] = useState({
+    name: '',
+    details: ''
+  });
+
+  // Form states for new Question
+  const [questionForm, setQuestionForm] = useState({
+    text: '',
+    optionA: '',
+    optionB: '',
+    optionC: '',
+    optionD: '',
+    correctAnswer: 0, // 0 = A, 1 = B, 2 = C, 3 = D
+    explanation: '',
+    imageUrl: ''
+  });
+
+  // Additional CRUD States
+  const [editingQuestionId, setEditingQuestionId] = useState<string | null>(null);
+  const [showEditSubject, setShowEditSubject] = useState(false);
+  const [editSubjectForm, setEditSubjectForm] = useState({
+    id: '',
+    name: '',
+    details: ''
+  });
+
+  // Confirmation state for deleting subjects/questions without using the blocked native iframe confirm
+  const [subjectToDelete, setSubjectToDelete] = useState<{ id: string, name: string } | null>(null);
+  const [questionToDelete, setQuestionToDelete] = useState<{ id: string, text: string } | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  // File upload handler for Question Image (Optional)
+  const handleQuestionImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 8 * 1024 * 1024) {
+      setErrorMessage("Image size must be under 8MB.");
+      setTimeout(() => setErrorMessage(null), 4000);
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      if (typeof ev.target?.result === 'string') {
+        setQuestionForm(prev => ({ ...prev, imageUrl: ev.target!.result as string }));
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
+  // Fetch all subjects on mount with LocalStorage failover
+  const fetchSubjects = async () => {
+    setLoadingSubjects(true);
+    let list: Subject[] = [];
+    let firestoreSuccess = false;
+    
+    // 1. Try pulling from Firestore
+    try {
+      const querySnapshot = await getDocs(query(collection(db, 'questionBank'), orderBy('createdAt', 'desc')));
+      list = querySnapshot.docs.map(docSnap => ({
+        id: docSnap.id,
+        ...docSnap.data()
+      })) as Subject[];
+      firestoreSuccess = true;
+    } catch (err) {
+      console.warn("Failed fetching subjects from Firestore, falling back to LocalStorage:", err);
+    }
+
+    // 2. Read local catalog storage
+    const savedLocal = localStorage.getItem('local_subjects');
+    let localList: Subject[] = [];
+    if (savedLocal) {
+      try {
+        localList = JSON.parse(savedLocal);
+      } catch (e) {
+        console.error("Error parsing local_subjects:", e);
+      }
+    }
+
+    // 2.5 Purge automated default subjects
+    const defaultKeys = ['cardiology', 'neurology', 'ophthalmology', 'pediatrics', 'obstetrics', 'obstetrics-gynecology', 'obstetrics_gynecology', 'obstetrics-&-gynecology', 'obstetrics-and-gynecology'];
+    
+    const filteredLocalList = localList.filter(s => !defaultKeys.includes(s.id.toLowerCase()));
+    if (filteredLocalList.length !== localList.length) {
+      localStorage.setItem('local_subjects', JSON.stringify(filteredLocalList));
+      localList = filteredLocalList;
+    }
+
+    list = list.filter(s => !defaultKeys.includes(s.id.toLowerCase()));
+
+    // Run persistent background deletion of default keys
+    defaultKeys.forEach(async (id) => {
+      try {
+        await deleteDoc(doc(db, 'questionBank', id));
+      } catch (e) {
+        // Ignore
+      }
+    });
+
+    let mergedList: Subject[] = [];
+    if (firestoreSuccess) {
+      localStorage.setItem('local_subjects', JSON.stringify(list));
+      mergedList = list;
+    } else {
+      mergedList = localList;
+    }
+
+    // 4. Start with a clean empty list if fully empty
+    if (mergedList.length === 0) {
+      localStorage.setItem('local_subjects', JSON.stringify([]));
+    }
+
+    setSubjects(mergedList);
+
+    // Set first active if not chosen or if chosen is no longer in list
+    if (mergedList.length > 0) {
+      if (!selectedSubjectId || !mergedList.some(s => s.id === selectedSubjectId)) {
+        setSelectedSubjectId(mergedList[0].id);
+      }
+    } else {
+      setSelectedSubjectId('');
+    }
+
+    // 5. Gather question counts for metric tracker
+    const counts: Record<string, number> = {};
+    await Promise.all(mergedList.map(async (subj) => {
+      try {
+        const qSnap = await getDocs(collection(db, `questionBank/${subj.id}/questions`));
+        let count = qSnap.size;
+        
+        // Merge with local questions representation
+        const localQs = localStorage.getItem(`local_questions_${subj.id}`);
+        if (localQs) {
+          try {
+            const parsed = JSON.parse(localQs);
+            count = Math.max(count, parsed.length);
+          } catch {}
+        }
+        counts[subj.id] = count;
+      } catch (err) {
+        // pure local count
+        const localQs = localStorage.getItem(`local_questions_${subj.id}`);
+        if (localQs) {
+          try {
+            counts[subj.id] = JSON.parse(localQs).length;
+          } catch {
+            counts[subj.id] = 0;
+          }
+        } else {
+          counts[subj.id] = 0;
+        }
+      }
+    }));
+    
+    setSubjectCounts(counts);
+    setLoadingSubjects(false);
+  };
+
+  // Fetch questions for currently selected subject with LocalStorage failover
+  const fetchQuestionsForSubject = async (subjectId: string) => {
+    if (!subjectId) {
+      setQuestions([]);
+      return;
+    }
+    setLoadingQuestions(true);
+    let list: Question[] = [];
+    let firestoreSuccess = false;
+    
+    // 1. Try Firestore
+    try {
+      const querySnapshot = await getDocs(collection(db, `questionBank/${subjectId}/questions`));
+      list = querySnapshot.docs.map(docSnap => ({
+        id: docSnap.id,
+        ...docSnap.data()
+      })) as Question[];
+      firestoreSuccess = true;
+    } catch (err) {
+      console.warn(`Failed fetching questions for ${subjectId} from Firestore, using LocalStorage:`, err);
+    }
+
+    // 2. Fetch local storage
+    const savedLocal = localStorage.getItem(`local_questions_${subjectId}`);
+    let localList: Question[] = [];
+    if (savedLocal) {
+      try {
+        localList = JSON.parse(savedLocal);
+      } catch {}
+    }
+
+    let mergedList: Question[] = [];
+    if (firestoreSuccess) {
+      localStorage.setItem(`local_questions_${subjectId}`, JSON.stringify(list));
+      mergedList = list;
+    } else {
+      mergedList = localList;
+    }
+
+    setQuestions(mergedList);
+    setLoadingQuestions(false);
+  };
+
+  useEffect(() => {
+    if (isAdmin) {
+      fetchSubjects();
+    }
+  }, [isAdmin]);
+
+  useEffect(() => {
+    if (selectedSubjectId) {
+      fetchQuestionsForSubject(selectedSubjectId);
+    } else {
+      setQuestions([]);
+    }
+  }, [selectedSubjectId]);
+
+  // Handle access deny
+  if (!isAdmin) {
+    return (
+      <div className="min-h-screen pt-32 flex items-center justify-center bg-brand-gray/10">
+        <div className="text-center bg-white p-12 rounded-[40px] shadow-sm max-w-md border border-gray-100">
+          <X className="mx-auto w-16 h-16 text-red-500 mb-6 bg-red-50 p-4 rounded-3xl" />
+          <h1 className="text-3xl font-bold mb-4 text-gray-900">Access Denied</h1>
+          <p className="text-gray-500 mb-8">You do not have administrative permissions to configure subject-specific questions.</p>
+          <button onClick={() => navigate('/')} className="btn-primary mx-auto">
+            Return to Homepage
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // Handle adding a new Subject with LocalStorage + Firestore dual saving
+  const handleCreateSubject = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newSubject.name.trim()) return;
+
+    setSubmittingSubject(true);
+    const docId = newSubject.name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-');
+    const docName = newSubject.name.trim();
+    const detailsVal = newSubject.details.trim();
+    const createdAtVal = new Date().toISOString();
+
+    const subjectObj: Subject = {
+      id: docId,
+      name: docName,
+      details: detailsVal,
+      createdAt: createdAtVal
+    };
+
+    // 1. Write to local storage catalog
+    let localSubjects: Subject[] = [];
+    try {
+      const saved = localStorage.getItem('local_subjects');
+      if (saved) {
+        localSubjects = JSON.parse(saved);
+      }
+    } catch {}
+    localSubjects = localSubjects.filter(s => s.id !== docId);
+    localSubjects.push(subjectObj);
+    localStorage.setItem('local_subjects', JSON.stringify(localSubjects));
+
+    // 2. Try saving to cloud Firestore
+    try {
+      const subjectRef = doc(db, 'questionBank', docId);
+      await setDoc(subjectRef, {
+        name: docName,
+        details: detailsVal,
+        createdAt: createdAtVal
+      });
+      setSuccessMessage(`Subject "${docName}" successfully created and synced to cloud database!`);
+    } catch (err) {
+      console.warn("Firestore save failed, created subject locally in local storage:", err);
+      setSuccessMessage(`Subject "${docName}" created locally inside sandbox.`);
+    } finally {
+      setNewSubject({ name: '', details: '' });
+      setShowAddSubject(false);
+      setTimeout(() => setSuccessMessage(null), 4000);
+      setSubmittingSubject(false);
+      await fetchSubjects();
+      setSelectedSubjectId(docId);
+    }
+  };
+
+  // Process saving a Question (Create or Edit) with LocalStorage fallback
+  const handleSaveQuestion = async (keepSubjectActive: boolean = true) => {
+    if (!selectedSubjectId) {
+      setErrorMessage("Please select a subject first!");
+      setTimeout(() => setErrorMessage(null), 4000);
+      return;
+    }
+
+    const { text, optionA, optionB, optionC, optionD, correctAnswer, explanation } = questionForm;
+    
+    if (!text.trim()) {
+      setErrorMessage("Please enter the question text.");
+      setTimeout(() => setErrorMessage(null), 4000);
+      return;
+    }
+    if (!optionA.trim() || !optionB.trim() || !optionC.trim() || !optionD.trim()) {
+      setErrorMessage("Please provide content for all 4 multiple-choice options.");
+      setTimeout(() => setErrorMessage(null), 4000);
+      return;
+    }
+
+    setSubmittingQuestion(true);
+    const questionId = editingQuestionId || 'q_' + Date.now().toString() + '_' + Math.random().toString(36).substr(2, 5);
+    const questionData: Question = {
+      id: questionId,
+      text: text.trim(),
+      options: [optionA.trim(), optionB.trim(), optionC.trim(), optionD.trim()],
+      correctAnswer: Number(correctAnswer),
+      explanation: explanation.trim(),
+      imageUrl: questionForm.imageUrl || '',
+      createdAt: new Date().toISOString()
+    };
+
+    // 1. Write locally
+    let localQs: Question[] = [];
+    try {
+      const saved = localStorage.getItem(`local_questions_${selectedSubjectId}`);
+      if (saved) {
+        localQs = JSON.parse(saved);
+      }
+    } catch {}
+    localQs = localQs.filter(q => q.id !== questionId);
+    localQs.push(questionData);
+    localStorage.setItem(`local_questions_${selectedSubjectId}`, JSON.stringify(localQs));
+
+    // 2. Try writing to Firestore
+    try {
+      const questionDocRef = doc(db, `questionBank/${selectedSubjectId}/questions`, questionId);
+      await setDoc(questionDocRef, {
+        text: questionData.text,
+        options: questionData.options,
+        correctAnswer: questionData.correctAnswer,
+        explanation: questionData.explanation,
+        imageUrl: questionData.imageUrl || '',
+        createdAt: questionData.createdAt
+      }, { merge: true });
+
+      setSuccessMessage(editingQuestionId ? "Question updated inside database!" : "Question added successfully!");
+    } catch (err) {
+      console.warn("Firestore question write failed, progress saved locally:", err);
+      setSuccessMessage("Question saved locally in workspace sandbox database!");
+    } finally {
+      setEditingQuestionId(null);
+      setTimeout(() => setSuccessMessage(null), 3000);
+      setQuestionForm({
+        text: '',
+        optionA: '',
+        optionB: '',
+        optionC: '',
+        optionD: '',
+        correctAnswer: 0,
+        explanation: '',
+        imageUrl: ''
+      });
+
+      if (questionInputRef.current) {
+        questionInputRef.current.focus();
+      }
+
+      setSubmittingQuestion(false);
+      // Refresh questions of this subject dynamically
+      await fetchQuestionsForSubject(selectedSubjectId);
+      
+      // Update local counts immediately
+      setSubjectCounts(prev => ({
+        ...prev,
+        [selectedSubjectId]: localQs.length
+      }));
+    }
+  };
+
+  // Start editing a specific question
+  const handleStartEditQuestion = (q: Question) => {
+    setEditingQuestionId(q.id);
+    setQuestionForm({
+      text: q.text,
+      optionA: q.options[0] || '',
+      optionB: q.options[1] || '',
+      optionC: q.options[2] || '',
+      optionD: q.options[3] || '',
+      correctAnswer: q.correctAnswer,
+      explanation: q.explanation || '',
+      imageUrl: q.imageUrl || ''
+    });
+    if (questionInputRef.current) {
+      questionInputRef.current.focus();
+    }
+  };
+
+  // Start editing active subject details
+  const handleStartEditSubject = (subjId?: string) => {
+    const targetId = subjId || selectedSubjectId;
+    const s = subjects.find(sub => sub.id === targetId);
+    if (!s) return;
+    setEditSubjectForm({
+      id: s.id,
+      name: s.name,
+      details: s.details || ''
+    });
+    setShowEditSubject(true);
+  };
+
+  // Save the modified subject details with LocalStorage fallback
+  const handleSaveEditSubject = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editSubjectForm.name.trim()) return;
+
+    setSubmittingSubject(true);
+    const updatedSubObj: Subject = {
+      id: editSubjectForm.id,
+      name: editSubjectForm.name.trim(),
+      details: editSubjectForm.details.trim(),
+      createdAt: subjects.find(sub => sub.id === editSubjectForm.id)?.createdAt || new Date().toISOString()
+    };
+
+    // Update locally
+    let localSubjects: Subject[] = [];
+    try {
+      const saved = localStorage.getItem('local_subjects');
+      if (saved) {
+        localSubjects = JSON.parse(saved);
+      }
+    } catch {}
+    localSubjects = localSubjects.map(s => s.id === editSubjectForm.id ? updatedSubObj : s);
+    localStorage.setItem('local_subjects', JSON.stringify(localSubjects));
+
+    // Update in Firestore
+    try {
+      const subjectDocRef = doc(db, 'questionBank', editSubjectForm.id);
+      await setDoc(subjectDocRef, {
+        name: updatedSubObj.name,
+        details: updatedSubObj.details,
+        createdAt: updatedSubObj.createdAt
+      }, { merge: true });
+
+      setSuccessMessage(`Subject "${editSubjectForm.name}" updated successfully!`);
+    } catch (err) {
+      console.warn("Firestore update failed, updated locally:", err);
+      setSuccessMessage(`Subject "${editSubjectForm.name}" updated locally.`);
+    } finally {
+      setShowEditSubject(false);
+      setTimeout(() => setSuccessMessage(null), 3000);
+      setSubmittingSubject(false);
+      await fetchSubjects();
+    }
+  };
+
+  const confirmDeleteSubject = (subjId: string) => {
+    const s = subjects.find(sub => sub.id === subjId);
+    if (s) {
+      setSubjectToDelete({ id: s.id, name: s.name });
+    }
+  };
+
+  const confirmDeleteQuestion = (q: Question) => {
+    setQuestionToDelete({ id: q.id, text: q.text });
+  };
+
+  // Delete the active subject
+  const handleDeleteSubject = async (targetId: string) => {
+    if (!targetId) return;
+    const activeSubjectName = subjects.find(s => s.id === targetId)?.name || 'Subject';
+
+    // Remove from localstorage-subjects
+    let localSubjects: Subject[] = [];
+    try {
+      const saved = localStorage.getItem('local_subjects');
+      if (saved) {
+        localSubjects = JSON.parse(saved);
+      }
+    } catch {}
+    localSubjects = localSubjects.filter(s => s.id !== targetId);
+    localStorage.setItem('local_subjects', JSON.stringify(localSubjects));
+
+    // Remove local questions
+    localStorage.removeItem(`local_questions_${targetId}`);
+
+    const remaining = subjects.filter(s => s.id !== targetId);
+    setSubjects(remaining);
+    
+    // Choose next active subject
+    if (selectedSubjectId === targetId) {
+      if (remaining.length > 0) {
+        setSelectedSubjectId(remaining[0].id);
+      } else {
+        setSelectedSubjectId('');
+      }
+    }
+
+    setSuccessMessage(`Subject "${activeSubjectName}" deleted successfully.`);
+    setTimeout(() => setSuccessMessage(null), 3000);
+
+    // Try deleting from cloud Firestore
+    try {
+      await deleteDoc(doc(db, 'questionBank', targetId));
+    } catch (err) {
+      console.warn("Firestore subject delete failed, deleted successfully locally:", err);
+    }
+  };
+
+  // Delete a specific question
+  const handleDeleteQuestion = async (questionId: string) => {
+    if (!selectedSubjectId) return;
+    
+    let localQs: Question[] = [];
+    try {
+      const saved = localStorage.getItem(`local_questions_${selectedSubjectId}`);
+      if (saved) {
+        localQs = JSON.parse(saved);
+      }
+    } catch {}
+    localQs = localQs.filter(q => q.id !== questionId);
+    localStorage.setItem(`local_questions_${selectedSubjectId}`, JSON.stringify(localQs));
+
+    setQuestions(localQs);
+    setSubjectCounts(prev => ({
+      ...prev,
+      [selectedSubjectId]: localQs.length
+    }));
+
+    setSuccessMessage("Question removed successfully.");
+    setTimeout(() => setSuccessMessage(null), 3000);
+
+    try {
+      await deleteDoc(doc(db, `questionBank/${selectedSubjectId}/questions`, questionId));
+    } catch (err) {
+      console.warn("Firestore question deletion failed, updated locally:", err);
+    }
+  };
+
+  // Filtered list based on search bar
+  const filteredQuestions = questions.filter(q => 
+    q.text.toLowerCase().includes(searchText.toLowerCase()) ||
+    q.explanation.toLowerCase().includes(searchText.toLowerCase()) ||
+    q.options.some(o => o.toLowerCase().includes(searchText.toLowerCase()))
+  );
+
+  return (
+    <div className="min-h-screen pt-32 pb-24 bg-brand-gray/30">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                {/* Navigation & Header */}
+        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-10">
+          <div className="flex items-center gap-4">
+            <button 
+              onClick={() => {
+                if (viewMode === 'add-questions') {
+                  setViewMode('list');
+                } else {
+                  navigate('/adminlandingpage');
+                }
+              }}
+              className="w-12 h-12 bg-white rounded-2xl border border-gray-100 flex items-center justify-center text-gray-500 hover:text-brand-blue hover:shadow-md transition-all shadow-sm cursor-pointer"
+              title={viewMode === 'add-questions' ? 'Back to Subjects List' : 'Return to main admin dashboard'}
+            >
+              <ArrowLeft size={20} />
+            </button>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="px-2.5 py-0.5 bg-brand-blue/10 text-brand-blue rounded-full text-[10px] font-bold uppercase tracking-widest">
+                  Content Management
+                </span>
+              </div>
+              <h1 className="text-4xl font-bold text-gray-900 mt-1">
+                {viewMode === 'add-questions' ? `Add Questions: ${subjects.find(s => s.id === selectedSubjectId)?.name || 'Editor'}` : 'Subject Practice Builder'}
+              </h1>
+              <p className="text-gray-500 font-medium">
+                {viewMode === 'add-questions' ? 'Configure clinical scenarios and multiple-choice options securely' : 'Build high-yield subject-wise preparation portals for medical students.'}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap gap-3">
+            {viewMode === 'list' && (
+              <>
+                <button 
+                  onClick={() => setShowAddSubject(true)}
+                  className="flex items-center gap-2 px-6 py-3.5 bg-brand-blue text-white rounded-2xl font-bold hover:bg-opacity-95 hover:shadow-lg transition-all shadow-md text-sm shrink-0 cursor-pointer"
+                >
+                  <Plus size={18} />
+                  Create Subject
+                </button>
+
+                <button 
+                  onClick={() => selectedSubjectId && confirmDeleteSubject(selectedSubjectId)}
+                  disabled={!selectedSubjectId || subjects.length === 0}
+                  className="flex items-center gap-2 px-6 py-3.5 bg-rose-600 text-white rounded-2xl font-bold hover:bg-rose-700 transition-all shadow-md text-sm shrink-0 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer animate-fade-in"
+                  title="Delete the currently active selected subject"
+                >
+                  <Trash2 size={18} />
+                  Delete Subject
+                </button>
+              </>
+            )}
+
+            {viewMode === 'add-questions' && (
+              <button 
+                onClick={() => setViewMode('list')}
+                className="flex items-center gap-2 px-6 py-3.5 bg-white text-gray-700 rounded-2xl font-bold hover:bg-gray-50 border border-gray-200 transition-all shadow-sm text-sm shrink-0 cursor-pointer"
+              >
+                <ArrowLeft size={18} />
+                Back to Subjects List
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Success Alert Banner */}
+        <AnimatePresence>
+          {successMessage && (
+            <motion.div 
+              initial={{ opacity: 0, y: -10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              className="bg-green-50 border border-green-200 rounded-2xl p-4 mb-8 flex items-center gap-3 text-green-700"
+            >
+              <CheckCircle2 size={20} className="shrink-0 text-green-600 animate-bounce" />
+              <p className="font-bold text-sm leading-tight">{successMessage}</p>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Error Alert Banner */}
+        <AnimatePresence>
+          {errorMessage && (
+            <motion.div 
+              initial={{ opacity: 0, y: -10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              className="bg-rose-50 border border-rose-200 rounded-2xl p-4 mb-8 flex items-center gap-3 text-rose-700 animate-fade-in"
+            >
+              <X size={20} className="shrink-0 text-rose-600 animate-pulse" />
+              <p className="font-bold text-sm leading-tight">{errorMessage}</p>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* VIEW MODE: LIST */}
+        {viewMode === 'list' && (
+          <>
+            {subjects.length === 0 ? (
+              <div className="bg-white rounded-[32px] border border-gray-150 p-12 text-center max-w-2xl mx-auto shadow-sm my-12">
+                <div className="w-20 h-20 bg-brand-blue/10 rounded-full flex items-center justify-center text-brand-blue mx-auto mb-6">
+                  <BookOpen size={40} />
+                </div>
+                <h2 className="text-2xl font-bold text-gray-900 mb-2">My Subjects Catalog is Empty</h2>
+                <p className="text-gray-500 mb-8 max-w-md mx-auto leading-relaxed">
+                  Create subjects to group practice exercises for your students. Add matching clinical questions inside each subject once created.
+                </p>
+                <div className="flex justify-center">
+                  <button
+                    onClick={() => setShowAddSubject(true)}
+                    className="flex items-center gap-2 px-6 py-3 bg-brand-blue text-white rounded-2xl font-bold hover:bg-opacity-95 transition-all shadow-md text-sm cursor-pointer"
+                  >
+                    <Plus size={16} />
+                    Create New Subject
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="bg-white rounded-[32px] border border-gray-100 p-6 sm:p-8 shadow-sm">
+                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6 pb-6 border-b border-gray-100/50">
+                  <div>
+                    <h2 className="text-xl font-bold text-gray-900 flex items-center gap-2">
+                      <Target size={20} className="text-brand-blue" />
+                      Active Subjects Catalog
+                    </h2>
+                    <p className="text-xs text-gray-400 font-medium">Configure clinical question blocks for added study subjects below.</p>
+                  </div>
+                  <div className="px-3 py-1 rounded-xl bg-blue-50 text-xs font-bold text-brand-blue border border-blue-100">
+                    Total Database Size: {(Object.values(subjectCounts) as number[]).reduce((a, b) => a + b, 0)} Questions
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+                  {subjects.map(s => {
+                    const count = subjectCounts[s.id] || 0;
+                    const isSelected = selectedSubjectId === s.id;
+                    const percent = Math.min(Math.round((count / 120) * 100), 100);
+                    const isDone = count >= 120;
+                    
+                    return (
+                      <div 
+                        key={s.id}
+                        onClick={() => setSelectedSubjectId(s.id)}
+                        className={`p-6 rounded-[24px] border-2 transition-all cursor-pointer select-none relative group flex flex-col justify-between ${
+                          isSelected 
+                          ? 'bg-blue-50/20 border-brand-blue shadow-md' 
+                          : 'bg-white border-gray-100 hover:border-gray-200 hover:shadow-lg'
+                        }`}
+                      >
+                        <div>
+                          <div className="flex justify-between items-baseline gap-2 mb-2">
+                            <span className="text-base font-extrabold text-gray-900 group-hover:text-brand-blue transition-colors truncate block max-w-[150px]" title={s.name}>
+                              {s.name}
+                            </span>
+                            <div className="flex items-center gap-1 shrink-0">
+                              <span className="text-lg font-black text-gray-900">{count}</span>
+                              <span className="text-[10px] font-bold text-gray-400">/ 120 Qs</span>
+                            </div>
+                          </div>
+
+                          <div className="w-full h-1.5 bg-gray-100 rounded-full mb-4 overflow-hidden">
+                            <div 
+                              className={`h-full rounded-full transition-all duration-500 ${isDone ? 'bg-green-500' : 'bg-brand-blue'}`}
+                              style={{ width: `${percent}%` }}
+                            />
+                          </div>
+
+                          <p className="text-xs text-gray-500 line-clamp-3 mb-6 min-h-[48px]">
+                            {s.details || 'No additional description provided.'}
+                          </p>
+                        </div>
+
+                        <div className="flex items-center justify-between gap-3 pt-4 border-t border-gray-100">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelectedSubjectId(s.id);
+                              setViewMode('add-questions');
+                            }}
+                            className="flex-grow flex items-center justify-center gap-1.5 px-4 py-2.5 bg-brand-blue text-white rounded-xl text-xs font-bold hover:bg-opacity-95 hover:shadow-lg transition-all shadow-sm cursor-pointer"
+                          >
+                            <Plus size={14} />
+                            Add Questions
+                          </button>
+
+                          <div className="flex gap-1.5 shrink-0">
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setSelectedSubjectId(s.id);
+                                handleStartEditSubject(s.id);
+                              }}
+                              className="p-2.5 bg-blue-50 text-brand-blue hover:bg-brand-blue hover:text-white rounded-xl transition-all cursor-pointer"
+                              title="Edit Subject Info"
+                            >
+                              <Edit2 size={14} />
+                            </button>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setSelectedSubjectId(s.id);
+                                confirmDeleteSubject(s.id);
+                              }}
+                              className="p-2.5 bg-rose-50 text-rose-600 hover:bg-rose-600 hover:text-white rounded-xl transition-all cursor-pointer"
+                              title="Delete Subject"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </>
+        )}
+
+        {/* VIEW MODE: ADD QUESTIONS */}
+        {viewMode === 'add-questions' && (
+          <div className="grid lg:grid-cols-12 gap-8">
+            
+            {/* LEFT SIDE: Subject Info & Question Form */}
+            <div className="lg:col-span-7 space-y-8">
+              <div className="bg-white rounded-[40px] border border-gray-100 p-8 sm:p-10 shadow-sm">
+                
+                {/* Header info of active subject */}
+                <div className="mb-8 p-6 bg-brand-gray/40 rounded-3xl border border-gray-100">
+                  <div className="flex justify-between items-start gap-4">
+                    <div>
+                      <span className="text-[10px] bg-brand-blue/10 text-brand-blue font-bold px-2.5 py-1 rounded-full uppercase">
+                        Active Subject
+                      </span>
+                      <h2 className="text-2xl font-black text-gray-900 mt-2">
+                        {subjects.find(s => s.id === selectedSubjectId)?.name}
+                      </h2>
+                      <p className="text-xs text-gray-500 mt-1 italic leading-relaxed">
+                        "{subjects.find(s => s.id === selectedSubjectId)?.details || 'No subject description available.'}"
+                      </p>
+                    </div>
+
+                    <div className="flex flex-col items-end shrink-0">
+                      <span className="text-xs text-gray-400 font-extrabold">PROGRESSION</span>
+                      <div className="flex items-baseline gap-1 mt-1">
+                        <span className="text-xl font-black text-brand-blue">{questions.length}</span>
+                        <span className="text-xs text-gray-400 font-bold">/ 120 Qs</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex gap-2 mt-4 pt-4 border-t border-gray-100">
+                    <button
+                      onClick={handleStartEditSubject}
+                      className="text-xs font-bold text-brand-blue hover:bg-brand-blue hover:text-white bg-blue-50/50 px-3 py-1.5 rounded-xl transition-all flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <Edit2 size={12} />
+                      Edit Subject Config
+                    </button>
+                    <button
+                      onClick={() => setViewMode('list')}
+                      className="text-xs font-bold text-gray-500 hover:bg-gray-100 bg-gray-50 px-3 py-1.5 rounded-xl transition-all flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <ArrowLeft size={12} />
+                      Change Subject
+                    </button>
+                  </div>
+                </div>
+
+                {/* Create/Edit Question Fields */}
+                <div className="space-y-6">
+                  <div className="space-y-2">
+                    <div className="flex justify-between items-center">
+                      <label className="text-xs font-bold text-gray-400 uppercase tracking-wider block">Question Text</label>
+                      <span className="text-[10px] text-gray-400 font-medium">supports clinical scenario formulations</span>
+                    </div>
+                    <textarea 
+                      ref={questionInputRef}
+                      required
+                      rows={4}
+                      value={questionForm.text}
+                      onChange={e => setQuestionForm({ ...questionForm, text: e.target.value })}
+                      className="w-full px-5 py-4 bg-brand-gray/50 rounded-2xl border border-gray-100 text-sm focus:ring-2 focus:ring-brand-blue outline-none transition-all resize-none"
+                      placeholder="Enter the medical/prometric clinical trial question context here..."
+                    />
+                  </div>
+
+                  {/* Question Image (Optional) */}
+                  <div className="space-y-2">
+                    <div className="flex justify-between items-center">
+                      <label className="text-xs font-bold text-gray-700 uppercase tracking-wider block flex items-center gap-1.5">
+                        <ImageIcon size={14} className="text-brand-blue" />
+                        <span>Question Image</span>
+                        <span className="text-gray-400 font-normal lowercase">(optional)</span>
+                      </label>
+                      <span className="text-[10px] text-gray-400 font-medium">Radiographs, ECG strips, CT scans, derm lesions</span>
+                    </div>
+
+                    <input 
+                      type="file" 
+                      ref={imageInputRef} 
+                      accept="image/*" 
+                      onChange={handleQuestionImageUpload} 
+                      className="hidden" 
+                    />
+
+                    {!questionForm.imageUrl ? (
+                      <div 
+                        onClick={() => imageInputRef.current?.click()}
+                        className="border-2 border-dashed border-gray-200 hover:border-brand-blue bg-brand-gray/30 hover:bg-brand-gray/60 rounded-2xl p-5 text-center cursor-pointer transition-all flex flex-col items-center justify-center space-y-1.5 group"
+                      >
+                        <div className="w-10 h-10 rounded-xl bg-white text-gray-400 group-hover:text-brand-blue flex items-center justify-center shadow-xs transition-colors">
+                          <Upload size={18} />
+                        </div>
+                        <div>
+                          <span className="text-xs font-bold text-gray-700 block">Click to upload an image for this question (Optional)</span>
+                          <span className="text-[10px] text-gray-400">PNG, JPG, WebP up to 8MB</span>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="relative rounded-2xl overflow-hidden border border-gray-200 bg-gray-900 group max-w-sm">
+                        <img 
+                          src={questionForm.imageUrl} 
+                          alt="Question reference" 
+                          className="max-h-48 w-full object-contain p-2"
+                        />
+                        <div className="p-2.5 bg-white border-t border-gray-100 flex items-center justify-between text-xs">
+                          <span className="text-green-600 font-bold flex items-center gap-1">
+                            <CheckCircle2 size={13} />
+                            <span>Image Attached</span>
+                          </span>
+                          <div className="flex items-center gap-3">
+                            <button
+                              type="button"
+                              onClick={() => imageInputRef.current?.click()}
+                              className="text-brand-blue font-bold hover:underline cursor-pointer"
+                            >
+                              Replace
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setQuestionForm(prev => ({ ...prev, imageUrl: '' }))}
+                              className="text-rose-600 font-bold hover:underline cursor-pointer"
+                            >
+                              Remove
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Options */}
+                  <div className="space-y-4">
+                    <label className="text-xs font-bold text-gray-400 uppercase tracking-wider block">Multiple Choice Options</label>
+                    <div className="grid sm:grid-cols-2 gap-4">
+                      {/* A */}
+                      <div className="relative">
+                        <span className="absolute left-4 top-1/2 -translate-y-1/2 w-6 h-6 rounded-full bg-brand-blue/10 text-brand-blue font-extrabold flex items-center justify-center text-xs">
+                          A
+                        </span>
+                        <input 
+                          type="text" 
+                          required
+                          value={questionForm.optionA}
+                          onChange={e => setQuestionForm({ ...questionForm, optionA: e.target.value })}
+                          placeholder="Option A string"
+                          className="w-full pl-12 pr-4 py-3.5 bg-brand-gray/50 rounded-2xl border border-gray-100 text-sm focus:ring-2 focus:ring-brand-blue outline-none"
+                        />
+                      </div>
+                      {/* B */}
+                      <div className="relative">
+                        <span className="absolute left-4 top-1/2 -translate-y-1/2 w-6 h-6 rounded-full bg-brand-blue/10 text-brand-blue font-extrabold flex items-center justify-center text-xs">
+                          B
+                        </span>
+                        <input 
+                          type="text" 
+                          required
+                          value={questionForm.optionB}
+                          onChange={e => setQuestionForm({ ...questionForm, optionB: e.target.value })}
+                          placeholder="Option B string"
+                          className="w-full pl-12 pr-4 py-3.5 bg-brand-gray/50 rounded-2xl border border-gray-100 text-sm focus:ring-2 focus:ring-brand-blue outline-none"
+                        />
+                      </div>
+                      {/* C */}
+                      <div className="relative">
+                        <span className="absolute left-4 top-1/2 -translate-y-1/2 w-6 h-6 rounded-full bg-brand-blue/10 text-brand-blue font-extrabold flex items-center justify-center text-xs">
+                          C
+                        </span>
+                        <input 
+                          type="text" 
+                          required
+                          value={questionForm.optionC}
+                          onChange={e => setQuestionForm({ ...questionForm, optionC: e.target.value })}
+                          placeholder="Option C string"
+                          className="w-full pl-12 pr-4 py-3.5 bg-brand-gray/50 rounded-2xl border border-gray-100 text-sm focus:ring-2 focus:ring-brand-blue outline-none"
+                        />
+                      </div>
+                      {/* D */}
+                      <div className="relative">
+                        <span className="absolute left-4 top-1/2 -translate-y-1/2 w-6 h-6 rounded-full bg-brand-blue/10 text-brand-blue font-extrabold flex items-center justify-center text-xs">
+                          D
+                        </span>
+                        <input 
+                          type="text" 
+                          required
+                          value={questionForm.optionD}
+                          onChange={e => setQuestionForm({ ...questionForm, optionD: e.target.value })}
+                          placeholder="Option D string"
+                          className="w-full pl-12 pr-4 py-3.5 bg-brand-gray/50 rounded-2xl border border-gray-100 text-sm focus:ring-2 focus:ring-brand-blue outline-none"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Correct Option */}
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-gray-400 uppercase tracking-wider block">Correct Answer Option</label>
+                    <div className="grid grid-cols-4 gap-3">
+                      {[
+                        { idx: 0, val: 'A' },
+                        { idx: 1, val: 'B' },
+                        { idx: 2, val: 'C' },
+                        { idx: 3, val: 'D' }
+                      ].map(opt => (
+                        <button 
+                          key={opt.idx}
+                          type="button"
+                          onClick={() => setQuestionForm({ ...questionForm, correctAnswer: opt.idx })}
+                          className={`py-3.5 rounded-2xl font-bold transition-all text-sm border flex items-center justify-center gap-1.5 ${questionForm.correctAnswer === opt.idx ? 'bg-green-600 border-green-600 text-white shadow-md' : 'bg-brand-gray/50 border-gray-100 text-gray-500 hover:bg-gray-100'}`}
+                        >
+                          {questionForm.correctAnswer === opt.idx && <CheckCircle2 size={16} />}
+                          Option {opt.val}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Explanation */}
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-gray-400 uppercase tracking-wider block">Explanation of Answer</label>
+                    <textarea 
+                      rows={3}
+                      value={questionForm.explanation}
+                      onChange={e => setQuestionForm({ ...questionForm, explanation: e.target.value })}
+                      className="w-full px-5 py-4 bg-brand-gray/50 rounded-2xl border border-gray-100 text-sm focus:ring-2 focus:ring-brand-blue outline-none transition-all resize-none"
+                      placeholder="Enter scientific justification detailing guidelines..."
+                    />
+                  </div>
+
+                  {/* Actions Grid */}
+                  <div className="pt-4 flex flex-col sm:flex-row gap-4">
+                    <button 
+                      type="button"
+                      disabled={submittingQuestion}
+                      onClick={() => handleSaveQuestion(true)}
+                      className={`flex-grow ${editingQuestionId ? 'bg-green-600 hover:bg-green-700 text-white' : 'btn-primary'} py-4 rounded-2xl justify-center font-bold text-sm shadow-md flex items-center gap-2 cursor-pointer`}
+                    >
+                      {submittingQuestion ? <Loader2 className="animate-spin" size={18} /> : <Save size={18} />}
+                      {editingQuestionId ? 'Update Question' : 'Save Question & Add Another'}
+                    </button>
+                    {editingQuestionId && (
+                      <button 
+                        type="button"
+                        onClick={() => {
+                          setEditingQuestionId(null);
+                          setQuestionForm({
+                            text: '',
+                            optionA: '',
+                            optionB: '',
+                            optionC: '',
+                            optionD: '',
+                            correctAnswer: 0,
+                            explanation: ''
+                          });
+                        }}
+                        className="px-6 bg-gray-100 hover:bg-gray-200 text-gray-700 py-4 rounded-2xl font-bold text-sm border border-gray-200 flex items-center justify-center gap-1.5 cursor-pointer shrink-0"
+                      >
+                        Cancel
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+              </div>
+            </div>
+
+            {/* RIGHT SIDE: Questions List */}
+            <div className="lg:col-span-5 space-y-6">
+              <div className="bg-white rounded-[40px] border border-gray-100 p-8 shadow-sm h-full flex flex-col animate-fade-in">
+                
+                <div className="flex justify-between items-center mb-6">
+                  <div>
+                    <h3 className="text-xl font-bold text-gray-900">Questions in Catalog</h3>
+                    <p className="text-xs text-gray-400">Total: {questions.length} registered</p>
+                  </div>
+                  <div className="w-10 h-10 bg-brand-blue/10 rounded-xl flex items-center justify-center text-brand-blue">
+                    <ListChecks size={20} />
+                  </div>
+                </div>
+
+                <div className="relative mb-6">
+                  <Search size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" />
+                  <input 
+                    type="text"
+                    value={searchText}
+                    onChange={e => setSearchText(e.target.value)}
+                    placeholder="Search scenario description..."
+                    className="w-full pl-11 pr-4 py-3 bg-brand-gray/50 rounded-2xl border-none focus:ring-2 focus:ring-brand-blue text-xs outline-none transition-all"
+                  />
+                  {searchText && (
+                    <button onClick={() => setSearchText('')} className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-950">
+                      <X size={14} />
+                    </button>
+                  )}
+                </div>
+
+                <div className="flex-grow overflow-y-auto max-h-[550px] pr-2 space-y-4 custom-scrollbar">
+                  {loadingQuestions ? (
+                    <div className="py-20 text-center text-brand-blue">
+                      <Loader2 size={36} className="animate-spin mx-auto mb-2" />
+                      <p className="text-sm font-bold">Retrieving queries...</p>
+                    </div>
+                  ) : filteredQuestions.length === 0 ? (
+                    <div className="py-20 text-center text-gray-400 italic text-sm">
+                      {searchText ? "No search matches found." : "No questions in this subject catalog yet."}
+                    </div>
+                  ) : (
+                    filteredQuestions.map((q, index) => {
+                      const letters = ['A', 'B', 'C', 'D'];
+                      return (
+                        <div key={q.id} className="p-4 rounded-2xl border border-gray-100 bg-brand-gray/30 hover:bg-white hover:shadow-md transition-all relative group">
+                          <div className="absolute top-4 right-4 flex gap-1.5 opacity-0 group-hover:opacity-100 transition-all">
+                            <button 
+                              onClick={() => handleStartEditQuestion(q)}
+                              className="p-1.5 bg-blue-50 text-brand-blue rounded-lg hover:bg-brand-blue hover:text-white transition-all shadow-sm cursor-pointer"
+                              title="Edit Question"
+                            >
+                              <Edit2 size={12} />
+                            </button>
+                            <button 
+                              onClick={() => confirmDeleteQuestion(q)}
+                              className="p-1.5 bg-red-50 text-red-500 rounded-lg hover:bg-red-500 hover:text-white transition-all shadow-sm cursor-pointer"
+                              title="Delete from Catalog"
+                            >
+                              <Trash2 size={12} />
+                            </button>
+                          </div>
+
+                          <div className="flex items-start gap-2.5 pr-8">
+                            <span className="font-mono text-xs font-bold text-gray-400 bg-white border border-gray-100 w-5 h-5 rounded-full flex items-center justify-center shrink-0">
+                              {index + 1}
+                            </span>
+                            <div className="space-y-2 flex-1 min-w-0">
+                              <p className="text-xs font-bold text-gray-800 line-clamp-3">{q.text}</p>
+                              {q.imageUrl && (
+                                <div className="rounded-lg overflow-hidden max-h-20 max-w-[120px] bg-gray-900 border border-gray-100">
+                                  <img src={q.imageUrl} alt="Case visual" className="max-h-20 object-contain w-full" />
+                                </div>
+                              )}
+                              <div className="flex flex-wrap gap-2">
+                                <span className="text-[9px] bg-green-50 text-green-700 font-bold px-2 py-0.5 rounded uppercase">
+                                  Choice: {letters[q.correctAnswer]}
+                                </span>
+                                {q.explanation && (
+                                  <span className="text-[9px] bg-gray-100 text-gray-600 font-medium px-2 py-0.5 rounded truncate max-w-[200px]">
+                                    {q.explanation}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+
+              </div>
+            </div>
+
+          </div>
+        )}
+      </div>
+
+      {/* MODAL: CREATE NEW SUBJECT */}
+      <AnimatePresence>
+        {showAddSubject && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            
+            {/* Backdrop */}
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => !submittingSubject && setShowAddSubject(false)}
+              className="absolute inset-0 bg-brand-dark/60 backdrop-blur-sm"
+            />
+
+            {/* Form Modal */}
+            <motion.div 
+              initial={{ scale: 0.95, opacity: 0, y: 15 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.95, opacity: 0, y: 15 }}
+              transition={{ type: 'spring', duration: 0.4 }}
+              className="relative w-full max-w-md bg-white rounded-[32px] p-8 shadow-2xl z-10 border border-gray-100"
+            >
+              <button 
+                onClick={() => setShowAddSubject(false)}
+                className="absolute top-6 right-6 p-1.5 hover:bg-brand-gray rounded-full text-gray-400 hover:text-gray-900 transition-colors"
+                disabled={submittingSubject}
+              >
+                <X size={20} />
+              </button>
+
+              <div className="flex gap-3 items-center mb-6">
+                <div className="w-12 h-12 bg-brand-blue/10 rounded-2xl flex items-center justify-center text-brand-blue shrink-0">
+                  <FolderPlus size={24} />
+                </div>
+                <div>
+                  <h3 className="text-2xl font-bold text-gray-900">Create New Subject</h3>
+                  <p className="text-xs text-gray-400">Add subject grouping for exercises</p>
+                </div>
+              </div>
+
+              <form onSubmit={handleCreateSubject} className="space-y-5">
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-gray-400 uppercase tracking-wider block">Subject Name</label>
+                  <input 
+                    type="text"
+                    required
+                    value={newSubject.name}
+                    onChange={e => setNewSubject({ ...newSubject, name: e.target.value })}
+                    placeholder="e.g. Physiology, Ophthalmology, Anatomy"
+                    className="w-full px-5 py-3.5 bg-brand-gray/50 rounded-2xl border border-gray-100 text-sm focus:ring-2 focus:ring-brand-blue outline-none transition-all font-bold text-gray-800"
+                    disabled={submittingSubject}
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-gray-400 uppercase tracking-wider block">Subject Details (Description)</label>
+                  <textarea 
+                    rows={3}
+                    value={newSubject.details}
+                    onChange={e => setNewSubject({ ...newSubject, details: e.target.value })}
+                    placeholder="Detailed explanation of what this subject covers..."
+                    className="w-full px-5 py-3.5 bg-brand-gray/50 rounded-2xl border border-gray-100 text-sm focus:ring-2 focus:ring-brand-blue outline-none transition-all resize-none text-gray-600"
+                    disabled={submittingSubject}
+                  />
+                </div>
+
+                <button 
+                  type="submit"
+                  disabled={submittingSubject}
+                  className="w-full btn-primary py-4 rounded-2xl justify-center text-sm font-bold shadow-md flex items-center gap-2"
+                >
+                  {submittingSubject ? <Loader2 size={18} className="animate-spin" /> : <Save size={18} />}
+                  Save Subject
+                </button>
+              </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* MODAL: EDIT ACTIVE SUBJECT */}
+      <AnimatePresence>
+        {showEditSubject && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            
+            {/* Backdrop */}
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => !submittingSubject && setShowEditSubject(false)}
+              className="absolute inset-0 bg-brand-dark/60 backdrop-blur-sm"
+            />
+
+            {/* Form Modal */}
+            <motion.div 
+              initial={{ scale: 0.95, opacity: 0, y: 15 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.95, opacity: 0, y: 15 }}
+              transition={{ type: 'spring', duration: 0.4 }}
+              className="relative w-full max-w-md bg-white rounded-[32px] p-8 shadow-2xl z-10 border border-gray-100"
+            >
+              <button 
+                onClick={() => setShowEditSubject(false)}
+                className="absolute top-6 right-6 p-1.5 hover:bg-brand-gray rounded-full text-gray-400 hover:text-gray-900 transition-colors"
+                disabled={submittingSubject}
+              >
+                <X size={20} />
+              </button>
+
+              <div className="flex gap-3 items-center mb-6">
+                <div className="w-12 h-12 bg-blue-50 text-brand-blue rounded-2xl flex items-center justify-center shrink-0">
+                  <Edit2 size={22} />
+                </div>
+                <div>
+                  <h3 className="text-2xl font-bold text-gray-900">Edit Subject Details</h3>
+                  <p className="text-xs text-gray-400">Update subject settings securely</p>
+                </div>
+              </div>
+
+              <form onSubmit={handleSaveEditSubject} className="space-y-5">
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-gray-400 uppercase tracking-wider block">Subject Name</label>
+                  <input 
+                    type="text"
+                    required
+                    value={editSubjectForm.name}
+                    onChange={e => setEditSubjectForm({ ...editSubjectForm, name: e.target.value })}
+                    placeholder="e.g. Cardiology"
+                    className="w-full px-5 py-3.5 bg-brand-gray/50 rounded-2xl border border-gray-100 text-sm focus:ring-2 focus:ring-brand-blue outline-none transition-all font-bold text-gray-800"
+                    disabled={submittingSubject}
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-gray-400 uppercase tracking-wider block">Subject Details (Description)</label>
+                  <textarea 
+                    rows={3}
+                    value={editSubjectForm.details}
+                    onChange={e => setEditSubjectForm({ ...editSubjectForm, details: e.target.value })}
+                    placeholder="Detailed description of coverage..."
+                    className="w-full px-5 py-3.5 bg-brand-gray/50 rounded-2xl border border-gray-100 text-sm focus:ring-2 focus:ring-brand-blue outline-none transition-all resize-none text-gray-600"
+                    disabled={submittingSubject}
+                  />
+                </div>
+
+                <button 
+                  type="submit"
+                  disabled={submittingSubject}
+                  className="w-full bg-brand-blue hover:bg-opacity-95 text-white py-4 rounded-2xl justify-center text-sm font-bold shadow-md flex items-center gap-2 cursor-pointer"
+                >
+                  {submittingSubject ? <Loader2 size={18} className="animate-spin" /> : <Save size={18} />}
+                  Update Subject Config
+                </button>
+              </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* MODAL: DELETE SUBJECT CONFIRMATION */}
+      <AnimatePresence>
+        {subjectToDelete && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            {/* Backdrop */}
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setSubjectToDelete(null)}
+              className="absolute inset-0 bg-brand-dark/60 backdrop-blur-sm"
+            />
+
+            {/* Modal Box */}
+            <motion.div 
+              initial={{ scale: 0.95, opacity: 0, y: 15 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.95, opacity: 0, y: 15 }}
+              transition={{ type: 'spring', duration: 0.4 }}
+              className="relative w-full max-w-sm bg-white rounded-[32px] p-8 shadow-2xl z-10 border border-red-100"
+            >
+              <button 
+                onClick={() => setSubjectToDelete(null)}
+                className="absolute top-6 right-6 p-1.5 hover:bg-brand-gray rounded-full text-gray-400 hover:text-gray-900 transition-colors"
+              >
+                <X size={20} />
+              </button>
+
+              <div className="flex gap-4 items-start mb-6">
+                <div className="w-12 h-12 bg-red-50 text-red-600 rounded-2xl flex items-center justify-center shrink-0">
+                  <Trash2 size={22} className="animate-bounce" />
+                </div>
+                <div>
+                  <h3 className="text-xl font-bold text-gray-900">Delete Subject?</h3>
+                  <p className="text-xs text-gray-400 mt-0.5 font-medium">This operation cannot be undone</p>
+                </div>
+              </div>
+
+              <div className="bg-red-50/50 rounded-2xl p-4 border border-red-100/50 text-xs text-red-800 mb-6 leading-relaxed">
+                Are you absolutely sure you want to permanently delete the medical subject <span className="font-bold">"{subjectToDelete.name}"</span>? All clinical questions associated with this subject will be removed from the portal database.
+              </div>
+
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  onClick={() => setSubjectToDelete(null)}
+                  className="flex-1 py-3 px-4 bg-gray-50 hover:bg-gray-100 text-gray-700 font-bold rounded-2xl text-sm transition-all cursor-pointer border border-gray-150 text-center"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    handleDeleteSubject(subjectToDelete.id);
+                    setSubjectToDelete(null);
+                  }}
+                  className="flex-1 py-3 px-4 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-2xl text-sm shadow-md hover:shadow-lg transition-all cursor-pointer flex items-center justify-center gap-1.5 text-center"
+                >
+                  <Trash2 size={16} />
+                  Confirm
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* MODAL: DELETE QUESTION CONFIRMATION */}
+      <AnimatePresence>
+        {questionToDelete && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            {/* Backdrop */}
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setQuestionToDelete(null)}
+              className="absolute inset-0 bg-brand-dark/60 backdrop-blur-sm"
+            />
+
+            {/* Modal Box */}
+            <motion.div 
+              initial={{ scale: 0.95, opacity: 0, y: 15 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.95, opacity: 0, y: 15 }}
+              transition={{ type: 'spring', duration: 0.4 }}
+              className="relative w-full max-w-sm bg-white rounded-[32px] p-8 shadow-2xl z-10 border border-red-100"
+            >
+              <button 
+                onClick={() => setQuestionToDelete(null)}
+                className="absolute top-6 right-6 p-1.5 hover:bg-brand-gray rounded-full text-gray-400 hover:text-gray-900 transition-colors"
+              >
+                <X size={20} />
+              </button>
+
+              <div className="flex gap-4 items-start mb-6">
+                <div className="w-12 h-12 bg-red-50 text-red-600 rounded-2xl flex items-center justify-center shrink-0">
+                  <Trash2 size={22} className="animate-pulse" />
+                </div>
+                <div>
+                  <h3 className="text-xl font-bold text-gray-900">Delete Question?</h3>
+                  <p className="text-xs text-gray-400 mt-0.5 font-medium">This operation cannot be undone</p>
+                </div>
+              </div>
+
+              <div className="bg-red-50/50 rounded-2xl p-4 border border-red-100/50 text-xs text-red-800 mb-6 leading-relaxed max-h-[140px] overflow-y-auto">
+                Are you sure you want to permanently delete this clinical question?
+                <p className="mt-2 text-gray-600 italic bg-white/90 p-2 rounded-xl border border-red-50 font-normal">
+                  "{questionToDelete.text}"
+                </p>
+              </div>
+
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  onClick={() => setQuestionToDelete(null)}
+                  className="flex-1 py-3 px-4 bg-gray-50 hover:bg-gray-100 text-gray-700 font-bold rounded-2xl text-sm transition-all cursor-pointer border border-gray-150 text-center"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    handleDeleteQuestion(questionToDelete.id);
+                    setQuestionToDelete(null);
+                  }}
+                  className="flex-1 py-3 px-4 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-2xl text-sm shadow-md hover:shadow-lg transition-all cursor-pointer flex items-center justify-center gap-1.5 text-center"
+                >
+                  <Trash2 size={16} />
+                  Confirm
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}

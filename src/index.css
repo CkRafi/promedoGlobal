@@ -1,0 +1,139 @@
+@import url('https://fonts.cdnfonts.com/css/nohemi');
+@import url('https://api.fontshare.com/v2/css?f[]=cabinet-grotesk@800,700,500,400&f[]=satoshi@700,500,400&f[]=general-sans@600,500,400&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Outfit:wght@400;500;600;700;800;900&display=swap');
+@import "tailwindcss";
+
+/* Font Face Declarations for Qurava Pemo & Nohemi */
+@font-face {
+  font-family: 'Qurava Pemo';
+  src: local('Qurava Pemo Regular'), local('QuravaPemo-Regular'), local('Qurava Pemo');
+  font-weight: 400 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Nohemi';
+  src: url('https://fonts.cdnfonts.com/css/nohemi') format('woff2'), local('Nohemi Regular'), local('Nohemi-Regular'), local('Nohemi');
+  font-weight: 400 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@theme {
+  --font-sans: "Qurava Pemo", "Qurava Pemo Regular", "General Sans", "Satoshi", "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Nohemi", "Nohemi Regular", "Cabinet Grotesk", "Outfit", sans-serif;
+  --font-primary: "Qurava Pemo", "Qurava Pemo Regular", "General Sans", "Satoshi", "Plus Jakarta Sans", sans-serif;
+  --font-secondary: "Nohemi", "Nohemi Regular", "Cabinet Grotesk", "Outfit", sans-serif;
+  
+  --color-brand-blue: #3853a4;
+  --color-brand-indigo: #3853a4;
+  --color-brand-dark: #231f20;
+  --color-brand-gray: #ffffff;
+  --color-brand-periwinkle: #ffffff;
+}
+
+@layer base {
+  *, ::before, ::after {
+    font-family: var(--font-primary);
+  }
+
+  body {
+    font-family: var(--font-primary);
+    @apply text-brand-dark bg-white antialiased;
+  }
+  
+  h1, h2, h3, h4, h5, h6, .font-display, .font-secondary {
+    font-family: var(--font-secondary);
+    @apply font-bold tracking-tight;
+  }
+
+  button, input, select, textarea, label {
+    font-family: var(--font-primary);
+  }
+}
+
+.font-primary, .font-pemo {
+  font-family: var(--font-primary) !important;
+}
+
+.font-secondary, .font-nohemi, .font-display {
+  font-family: var(--font-secondary) !important;
+}
+
+.glass-card {
+  @apply bg-white/80 backdrop-blur-md border border-white/20 shadow-xl;
+}
+
+.btn-primary {
+  font-family: var(--font-primary);
+  @apply bg-brand-dark text-white px-8 py-3.5 rounded-full font-medium transition-all hover:bg-brand-dark/90 flex items-center gap-2 cursor-pointer;
+}
+
+.btn-secondary {
+  font-family: var(--font-primary);
+  @apply bg-brand-blue text-white px-8 py-3.5 rounded-full font-medium transition-all hover:bg-brand-blue/90 flex items-center gap-2 cursor-pointer;
+}
+
+.section-container {
+  @apply max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20;
+}
+
+/* Responsive Media Queries for Auth Pages (Mobile, Tablet, Desktop) */
+@media (max-width: 640px) {
+  .auth-page-root,
+  .login-page-root {
+    min-height: 100dvh;
+    width: 100%;
+    padding: 1rem 0.75rem 2rem 0.75rem;
+  }
+  .auth-hero-banner {
+    padding: 1.5rem 1.25rem !important;
+    border-radius: 1.5rem !important;
+  }
+  .auth-input-element {
+    font-size: 16px !important;
+    min-height: 46px !important;
+  }
+  .auth-action-btn {
+    min-height: 48px !important;
+  }
+}
+
+@media (min-width: 641px) and (max-width: 1024px) {
+  .auth-page-root,
+  .login-page-root {
+    min-height: 100vh;
+    padding: 2.5rem 1.5rem;
+  }
+  .auth-tablet-card {
+    max-width: 700px;
+    margin: 0 auto;
+    border-radius: 2rem;
+  }
+}
+
+@media (min-width: 1025px) {
+  .auth-page-root {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: row;
+    padding: 0;
+  }
+  .login-page-root {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 3rem 1.5rem;
+  }
+  .auth-desktop-hero {
+    width: 46%;
+    min-height: 100vh;
+  }
+  .auth-desktop-form {
+    width: 54%;
+    min-height: 100vh;
+  }
+}

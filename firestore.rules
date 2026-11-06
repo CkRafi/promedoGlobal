@@ -1,0 +1,178 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    function isAdmin() {
+      return isAuthenticated() && 
+        (request.auth.token.email == "live.rafick@gmail.com" ||
+         (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "admin"));
+    }
+
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+    function isValidUser(data) {
+      return data.name is string && data.name.size() > 0 &&
+             data.email is string &&
+             data.role in ['user', 'student', 'admin'];
+    }
+
+    function isValidCourse(data) {
+      return data.title is string && data.title.size() > 0 &&
+             data.price is number && data.price >= 0;
+    }
+
+    function isValidEnrollment(data) {
+      return data.userId is string && data.courseId is string &&
+             data.title is string;
+    }
+
+    function isValidMocktest(data) {
+      return data.title is string && data.title.size() > 0 &&
+             data.timeLimit is number && data.timeLimit > 0 &&
+             data.passingScore is number &&
+             data.exam is string;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    // Courses: Publicly readable, admin writable
+    match /courses/{courseId} {
+      allow read: if true;
+      allow create, update: if isAdmin() && isValidCourse(request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    // Mocktests: Publicly readable, admin writable
+    match /mocktests/{testId} {
+      allow read: if true;
+      allow create, update: if isAdmin() && isValidMocktest(request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    // Users: Owner readable/writable (limited), admin full access
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow create: if isOwner(userId) && isValidUser(request.resource.data) && 
+                    (request.resource.data.role in ['user', 'student'] || isAdmin());
+      allow update: if (isOwner(userId) && isValidUser(request.resource.data) && request.resource.data.role == resource.data.role) || isAdmin();
+      allow delete: if isAdmin();
+
+      match /bookmarks/{questionId} {
+        allow read, write: if isOwner(userId) || isAdmin();
+      }
+
+      match /subjectBookmarks/{subjectId} {
+        allow read, write: if isOwner(userId) || isAdmin();
+      }
+
+      match /folderBookmarks/{folderId} {
+        allow read, write: if isOwner(userId) || isAdmin();
+      }
+
+      match /customModules/{moduleId} {
+        allow read, write: if isOwner(userId) || isAdmin();
+      }
+    }
+
+    // Question Folders (Subject Folders created in student portal): Publicly readable, admin writable
+    match /questionFolders/{folderId} {
+      allow read: if true;
+      allow create, update, delete: if isAdmin();
+    }
+
+    // Enrollments: Owner readable/writable, admin full access
+    match /enrollments/{enrollmentId} {
+      allow read: if isAuthenticated() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow create: if isAuthenticated() && (request.resource.data.userId == request.auth.uid || isAdmin()) && isValidEnrollment(request.resource.data);
+      allow update: if isAuthenticated() && (resource.data.userId == request.auth.uid || isAdmin()) && isValidEnrollment(request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    // Mock test attempts: candidate can create and read their own attempts
+    match /mockAttempts/{attemptId} {
+      allow read: if isAuthenticated() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow create: if isAuthenticated() && (request.resource.data.userId == request.auth.uid || isAdmin());
+      allow update, delete: if isAdmin();
+    }
+
+    // Subjects and nested questions (questionBank): Publicly readable, admin writable
+    match /questionBank/{subjectId} {
+      allow read: if true;
+      allow create, update, delete: if isAdmin();
+
+      match /questions/{questionId} {
+        allow read: if true;
+        allow create, update, delete: if isAdmin();
+      }
+    }
+
+    // Hall of Fame posters: Publicly readable, admin writable
+    match /halloffame/{posterId} {
+      allow read: if true;
+      allow create, update, delete: if isAdmin();
+    }
+
+    // Reviews & Success Stories: Publicly readable, authenticated create, admin update/delete
+    match /reviews/{reviewId} {
+      allow read: if true;
+      allow create: if isAuthenticated();
+      allow update, delete: if isAdmin();
+    }
+
+    // Testimonials: Publicly readable, admin full CRUD support
+    match /testimonials/{testimonialId} {
+      allow read: if true;
+      allow create, update, delete: if isAdmin();
+    }
+
+    // Appointments: Public create, owner or admin read, admin update/delete
+    match /appointments/{appointmentId} {
+      allow read: if isAdmin() || (isAuthenticated() && resource.data.email == request.auth.token.email);
+      allow create: if true;
+      allow update, delete: if isAdmin();
+    }
+
+    // Ads: Publicly readable, admin writable
+    match /ads/{adId} {
+      allow read: if true;
+      allow create, update, delete: if isAdmin();
+    }
+
+    // Portal Sections: Publicly readable, admin writable
+    match /portalSections/{sectionId} {
+      allow read: if true;
+      allow create, update, delete: if isAdmin();
+    }
+
+    // User Logins & Candidate Mock Test Entrance Records: Public create/update, Admin full read/write
+    match /userLogins/{loginId} {
+      allow read: if isAdmin();
+      allow create, update: if true;
+      allow delete: if isAdmin();
+    }
+
+    // Image Bank: Publicly readable, Admin full write
+    match /imageBank/{imageId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+  }
+}

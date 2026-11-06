@@ -1,0 +1,8 @@
+{
+  "name": "Promedo - Online Learning Platform",
+  "description": "Your trusted partner for a successful GCC licensing journey. Features authentic Prometric computer-based mock test simulators, candidate performance analytics, and clinical recall preparation.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

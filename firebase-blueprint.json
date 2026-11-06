@@ -1,0 +1,213 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile information",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "email": { "type": "string" },
+        "phone": { "type": "string" },
+        "role": { "type": "string", "enum": ["user", "student", "admin"] },
+        "examPreparingFor": { "type": "string" },
+        "termsAgreed": { "type": "boolean" },
+        "termsAgreedAt": { "type": "string" },
+        "authProvider": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" },
+        "mockTestsTaken": { "type": "number" },
+        "questionsAttempted": { "type": "number" },
+        "averageScore": { "type": "number" },
+        "bestScore": { "type": "number" }
+      },
+      "required": ["name", "email", "role"]
+    },
+    "Course": {
+      "title": "Course",
+      "description": "Course catalog item",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "image": { "type": "string" },
+        "description": { "type": "string" },
+        "price": { "type": "number" },
+        "originalPrice": { "type": "number" },
+        "category": { "type": "string" },
+        "videos": { "type": "number" },
+        "rating": { "type": "number" },
+        "reviews": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" },
+        "documentUrl": { "type": "string" },
+        "examImage": { "type": "string" },
+        "examPoints": { "type": "string" },
+        "faqs": { "type": "string" },
+        "examVideoUrl": { "type": "string" },
+        "galleryImages": { "type": "string" }
+      },
+      "required": ["title", "image", "description", "price", "category"]
+    },
+    "Enrollment": {
+      "title": "Enrollment",
+      "description": "User enrollment in a course",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "courseId": { "type": "string" },
+        "title": { "type": "string" },
+        "image": { "type": "string" },
+        "category": { "type": "string" },
+        "enrolledAt": { "type": "string" },
+        "progress": { "type": "number" }
+      },
+      "required": ["userId", "courseId", "title", "enrolledAt"]
+    },
+    "Mocktest": {
+      "title": "Mocktest",
+      "description": "Mock test with multiple choice questions",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "questions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string" },
+              "text": { "type": "string" },
+              "options": { "type": "array", "items": { "type": "string" } },
+              "correctAnswer": { "type": "number" },
+              "explanation": { "type": "string" }
+            }
+          }
+        },
+        "timeLimit": { "type": "number" },
+        "passingScore": { "type": "number" },
+        "exam": { "type": "string" },
+        "isActive": { "type": "boolean" },
+        "isPaid": { "type": "boolean" },
+        "price": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["title", "timeLimit", "passingScore", "exam"]
+    },
+    "Subject": {
+      "title": "Subject",
+      "description": "Subject category for subject-wise practice questions",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "details": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["name"]
+    },
+    "SubjectQuestion": {
+      "title": "SubjectQuestion",
+      "description": "A question belonging to a specific subject",
+      "type": "object",
+      "properties": {
+        "text": { "type": "string" },
+        "options": { "type": "array", "items": { "type": "string" } },
+        "correctAnswer": { "type": "number" },
+        "explanation": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["text", "options", "correctAnswer"]
+    },
+    "UserLogin": {
+      "title": "UserLogin",
+      "description": "User login session and test candidate log records",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "phone": { "type": "string" },
+        "email": { "type": "string" },
+        "examPreparingFor": { "type": "string" },
+        "loginCount": { "type": "number" },
+        "lastLoginAt": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "source": { "type": "string" }
+      },
+      "required": ["name", "email", "examPreparingFor"]
+    },
+    "Testimonial": {
+      "title": "Testimonial",
+      "description": "Candidate and doctor testimonials and exam reviews",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "role": { "type": "string" },
+        "studentId": { "type": "string" },
+        "text": { "type": "string" },
+        "rating": { "type": "number" },
+        "avatar": { "type": "string" },
+        "status": { "type": "string", "enum": ["approved", "pending", "rejected"] },
+        "submittedBy": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "verifiedAt": { "type": "string" },
+        "type": { "type": "string" }
+      },
+      "required": ["name", "role", "text"]
+    },
+    "ImageBankItem": {
+      "title": "ImageBankItem",
+      "description": "Clinical visual spotter question in Image Bank",
+      "type": "object",
+      "properties": {
+        "code": { "type": "string" },
+        "title": { "type": "string" },
+        "subject": { "type": "string" },
+        "authority": { "type": "string" },
+        "imageUrl": { "type": "string" },
+        "options": { "type": "array", "items": { "type": "string" } },
+        "correctAnswer": { "type": "string" },
+        "explanation": { "type": "string" },
+        "clinicalPearl": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["code", "title", "subject", "imageUrl", "correctAnswer"]
+    }
+  },
+  "firestore": {
+    "/testimonials/{testimonialId}": {
+      "schema": "Testimonial",
+      "description": "Candidate and doctor testimonials collection"
+    },
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profiles"
+    },
+    "/userLogins/{loginId}": {
+      "schema": "UserLogin",
+      "description": "Candidate logins and test entrance sessions"
+    },
+    "/courses/{courseId}": {
+      "schema": "Course",
+      "description": "Course catalog"
+    },
+    "/enrollments/{enrollmentId}": {
+      "schema": "Enrollment",
+      "description": "User enrollments"
+    },
+    "/mocktests/{mocktestId}": {
+      "schema": "Mocktest",
+      "description": "Mock test collection"
+    },
+    "/questionBank/{subjectId}": {
+      "schema": "Subject",
+      "description": "Subject collection for subject-wise practice"
+    },
+    "/questionBank/{subjectId}/questions/{questionId}": {
+      "schema": "SubjectQuestion",
+      "description": "Sub-collection of questions for a subject"
+    },
+    "/imageBank/{imageId}": {
+      "schema": "ImageBankItem",
+      "description": "Image Bank visual diagnostic spotter questions"
+    }
+  }
+}
